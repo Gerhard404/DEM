@@ -1,0 +1,27 @@
+#!/bin/bash
+set -x
+
+# define chute start angles
+startAngles=(0 60 120 180 240 300)
+
+###############################################################################
+### run the cases - no user input required beyond this point
+###############################################################################
+
+# loop over all angles
+rm startAngles.txt
+for curAngle in "${startAngles[@]}"; do
+    # do something like: echo $curAngle
+    echo $curAngle >> startAngles.txt 
+    
+    mpirun -np 8 liggghts -in in.blastFurnaceCharging_freeChuteStartPos -var chuteStartAngleDeg $curAngle
+done
+
+
+# run post-processing
+octave --no-gui postProcess.m
+
+
+echo " "
+echo "Finished"
+echo " "

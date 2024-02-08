@@ -1,0 +1,1 @@
+variable tiltAngSpeed equal ((step-${initStep})*${dt}<6)*(0)+((step-${initStep})*${dt}>=6&&(step-${initStep})*${dt}<12)*(0-0.0005*((step-${initStep})*${dt}-6))+((step-${initStep})*${dt}>=12)*(-0.003)

@@ -1,0 +1,14 @@
+#!/bin/bash
+#
+# clean the cases
+
+rm -rf post_?
+rm -rf post_??
+rm -rf post_???
+
+rm log.*
+rm *.log
+
+rm *.txt
+
+rm *.png

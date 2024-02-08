@@ -1,0 +1,285 @@
+#################################################
+# chute start angle
+#################################################
+
+# When the variable command below is commented-out, we need to pass a value via the command-line call using '-var chuteStartAngleDeg XXX'
+# this is done by the Allrun script. Thus, we can run a parameter study via Shell script.
+#
+# Otherwise, specify the variable in this script. Note, you can't do both: pass by command-line argument and specify in the script.
+
+#variable chuteStartAngleDeg equal 20
+
+
+#################################################
+# no user input beyond this point
+#################################################
+
+# create directory for solution data by system call
+shell mkdir post_${chuteStartAngleDeg}
+
+# write current chute start angle into text file by system call
+shell date '+%s' > curTime.txt
+
+
+variable curExecTime file 'curTime.txt'
+variable initExecTime equal ${curExecTime}
+
+echo both
+
+atom_style	granular
+atom_modify	map array
+boundary	f f f
+newton		off
+
+communicate	single vel yes
+
+units		si
+
+
+#####################################################################
+#
+# definition of the atom types, and the number of atom types
+variable numOfAtomTypes equal 2
+
+variable atomType_coke equal 1
+variable atomType_steel equal 2
+#
+#####################################################################
+
+# when adjusting the number of parallel processes, you need to adjust the call of mpirun in the Allrun script accordingly
+processors 2 4 1
+
+region		reg block -6.5 6.5 -6.5 6.5 -1.0 12.0 units box
+create_box	${numOfAtomTypes} reg
+
+neighbor	0.002 bin
+neigh_modify	delay 0
+
+log post_${chuteStartAngleDeg}/log.liggghts
+
+
+#####################################################################
+#
+# definition of the material parameters
+variable density_coke equal 1050
+
+fix m_youngsModulus all property/global youngsModulus peratomtype 540000000 200000000000
+fix m_poissonsRatio all property/global poissonsRatio peratomtype 0.22 0.3
+fix m_coefficientRestitution all property/global coefficientRestitution peratomtypepair 2 &
+    0.39 0.42 &
+    0.42 0.99
+fix m_coefficientFriction all property/global coefficientFriction peratomtypepair 2 &
+    0.87 0.5 &
+    0.5 0.99
+fix m_coefficientRollingFriction all property/global coefficientRollingFriction peratomtypepair 2 &
+    0.46 0.46 &
+    0.46 0.99
+
+
+# particle size distribution
+variable radius_coke equal 0.02
+fix pts1 all particletemplate/sphere 1 atom_type ${atomType_coke} density constant ${density_coke} radius constant ${radius_coke}
+fix pdd1 all particledistribution/discrete 1.  1 pts1 1.0
+#
+#####################################################################
+
+
+variable g0 equal 9.81
+fix gravi all gravity ${g0} vector 0.0 0.0 -1.0
+
+
+pair_style gran model hertz tangential history rolling_friction epsd2
+pair_coeff	* *
+
+
+variable dt equal 1.e-5
+timestep ${dt}
+
+variable steps_per_second equal 1.0/${dt}
+variable dumpsteps equal ceil(0.5*${steps_per_second})
+variable printsteps equal ceil(0.1*${steps_per_second})
+
+
+# read meshes
+fix bfWalls all mesh/surface file meshes/stl/blastFurnaceWalls.stl type ${atomType_steel}
+fix chute all mesh/surface file meshes/stl/chute.stl type ${atomType_steel} &
+	rotate axis 0.0 0.0 1.0 angle ${chuteStartAngleDeg}
+
+fix insertionMesh all mesh/surface file meshes/stl/insertionFace.stl type ${atomType_steel}
+
+
+# create walls
+fix meshwalls all wall/gran model hertz tangential history rolling_friction epsd2 &
+    mesh n_meshes 2 meshes bfWalls chute
+
+
+variable curStep equal step
+variable initStep equal ${curStep}
+variable curSimTime equal (step-${initStep})*${dt}
+
+
+#####################################################################
+#
+# variables for the angular speeds
+include in.variable_tiltAngSpeed
+variable rotateAngSpeed equal 0.8
+#
+#####################################################################
+
+
+variable chuteStartAngle equal ${chuteStartAngleDeg}*PI/180.0
+variable tiltAxisX equal sin(${chuteStartAngle})
+variable tiltAxisY equal -cos(${chuteStartAngle})
+
+# Tilt the chute
+fix move01 all move/mesh mesh chute rotate/variable &
+        origin 0.0 0.0 7.0 &
+        axis   ${tiltAxisX} ${tiltAxisY} 0.0 &
+        omega  v_tiltAngSpeed
+
+
+# Rotate the chute
+fix move02 all move/mesh mesh chute rotate/variable &
+        origin 0.0 0.0 7.0 &
+        axis   0.0 0.0 -1.0 &
+        omega  v_rotateAngSpeed
+
+# extract data and dump the chute's mesh
+print "Angular speeds: tilting rotation" file post_${chuteStartAngleDeg}/angularSpeeds.txt screen no
+fix extra all print ${printsteps} "${tiltAngSpeed} ${rotateAngSpeed}" &
+    append post_${chuteStartAngleDeg}/angularSpeeds.txt screen no
+
+
+# select integrator
+fix integr all nve/sphere
+
+
+variable insmass1 equal 6000.0
+variable massrate equal 200.0
+variable extrudelength equal 1.0
+variable termVel1 equal -8.0
+
+variable simulation_duration equal 40
+
+
+fix ins_stream1 all insert/stream seed 123457 distributiontemplate pdd1 mass ${insmass1} massrate ${massrate} &
+    maxattempt 200 vel constant 0. 0. ${termVel1} overlapcheck yes insertion_face insertionMesh extrude_length ${extrudelength}
+
+
+run 1 # run fist step so dump is not empty
+
+# output settings
+compute		    rke all erotate/sphere
+thermo_style	custom step atoms ke c_rke cpu
+thermo			${dumpsteps}
+thermo_modify	lost ignore norm no
+compute_modify	thermo_temp dynamic yes
+
+variable nsteps equal step
+variable natoms equal atoms
+variable ekin   equal ke/atoms
+
+fix numpart all print ${steps_per_second} "${curSimTime} ${natoms} ${ekin}" file post_${chuteStartAngleDeg}/natoms.txt &
+    title "#time atoms ekin/atom"
+
+
+# dump meshes
+dump dumpmesh all mesh/vtk ${dumpsteps} post_${chuteStartAngleDeg}/dumpChute*.vtk chute vel
+
+
+# dump particles
+dump dmp all custom ${dumpsteps} post_${chuteStartAngleDeg}/d_*.dump &
+     id type x y z vx vy vz omegax omegay omegaz radius
+
+
+# log cpu-time
+variable cpuTime equal cpu
+fix printCpuTime all print ${printsteps} "${curSimTime} ${cpuTime}" &
+    screen no title "simTime cpuTime" file post_${chuteStartAngleDeg}/cpuTime.txt
+
+
+
+# periodically perform load-balancing
+variable nFreqLoadBalance equal 5*${steps_per_second}
+fix loadBalance all balance ${nFreqLoadBalance} xyz 10 1.05
+
+
+# run the case
+variable runIncrements equal ${simulation_duration}*${steps_per_second}
+run ${runIncrements}
+
+
+# disable load balancing
+unfix loadBalance
+
+# simulation is finished - write restart file to allow for later post-processing
+write_restart	post_${chuteStartAngleDeg}/restart.coke_chargingSimpleChute_priorDeletion
+
+
+# read vtk volume meshes to define Sectors
+region Sector01 mesh/tet file meshes/vtk/sectorMesh_1.vtk scale 1. &
+    move 0. 0. 0. rotate 0. 0. 0. units box
+region Sector02 mesh/tet file meshes/vtk/sectorMesh_2.vtk scale 1. &
+    move 0. 0. 0. rotate 0. 0. 0. units box
+region Sector03 mesh/tet file meshes/vtk/sectorMesh_3.vtk scale 1. &
+    move 0. 0. 0. rotate 0. 0. 0. units box
+region Sector04 mesh/tet file meshes/vtk/sectorMesh_4.vtk scale 1. &
+    move 0. 0. 0. rotate 0. 0. 0. units box
+region Sector05 mesh/tet file meshes/vtk/sectorMesh_5.vtk scale 1. &
+    move 0. 0. 0. rotate 0. 0. 0. units box
+region Sector06 mesh/tet file meshes/vtk/sectorMesh_6.vtk scale 1. &
+    move 0. 0. 0. rotate 0. 0. 0. units box
+region Sector07 mesh/tet file meshes/vtk/sectorMesh_7.vtk scale 1. &
+    move 0. 0. 0. rotate 0. 0. 0. units box
+region Sector08 mesh/tet file meshes/vtk/sectorMesh_8.vtk scale 1. &
+    move 0. 0. 0. rotate 0. 0. 0. units box
+
+region blastFurnaceRegion cylinder z 0.0 0.0 4.5 0.0 3.0 units box
+
+# define groups of particles
+group sector01Particles region Sector01
+group sector02Particles region Sector02
+group sector03Particles region Sector03
+group sector04Particles region Sector04
+group sector05Particles region Sector05
+group sector06Particles region Sector06
+group sector07Particles region Sector07
+group sector08Particles region Sector08
+
+group allSectorParticles region blastFurnaceRegion
+
+# calculate the sectoral masses
+variable atomMass atom mass
+
+compute sumMassSector01 sector01Particles reduce sum v_atomMass
+compute sumMassSector02 sector02Particles reduce sum v_atomMass
+compute sumMassSector03 sector03Particles reduce sum v_atomMass
+compute sumMassSector04 sector04Particles reduce sum v_atomMass
+compute sumMassSector05 sector05Particles reduce sum v_atomMass
+compute sumMassSector06 sector06Particles reduce sum v_atomMass
+compute sumMassSector07 sector07Particles reduce sum v_atomMass
+compute sumMassSector08 sector08Particles reduce sum v_atomMass
+compute sumMassAllSectors allSectorParticles reduce sum v_atomMass
+compute sumMassAll all reduce sum v_atomMass
+
+
+variable Sector01mass equal c_sumMassSector01
+variable Sector02mass equal c_sumMassSector02
+variable Sector03mass equal c_sumMassSector03
+variable Sector04mass equal c_sumMassSector04
+variable Sector05mass equal c_sumMassSector05
+variable Sector06mass equal c_sumMassSector06
+variable Sector07mass equal c_sumMassSector07
+variable Sector08mass equal c_sumMassSector08
+variable allSectorsMass equal c_sumMassAllSectors
+variable totalMass equal c_sumMassAll
+
+fix printSectorMasses all print 1 "${Sector01mass} ${Sector02mass} ${Sector03mass} ${Sector04mass} ${Sector05mass} ${Sector06mass} ${Sector07mass} ${Sector08mass} ${allSectorsMass} ${totalMass}" &
+    append post_${chuteStartAngleDeg}/SectorMasses_${chuteStartAngleDeg}.txt screen no
+
+# run one timestep, so that the print-fix can do its work
+run 1
+
+
+
+
